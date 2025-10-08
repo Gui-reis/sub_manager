@@ -8,6 +8,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 NETFLIX_LOGIN_URL = "https://www.netflix.com/login"
 NETFLIX_ACCOUNT_URL = "https://www.netflix.com/account/"
+NETFLIX_PROFILES_URL = "https://www.netflix.com/account/profiles"
 STATE_PATH_DEFAULT = "netflix_state.json"
 GRAPHQL_URL = "https://web.prod.cloud.netflix.com/graphql"
 PERSISTED_QUERY_ID = "cca89a76-1986-49a9-9c8f-afaa2c098ead"
@@ -110,46 +111,46 @@ def build_cookie_header(cookies):
             pairs.append(f'{c["name"]}={c["value"]}')
     return "; ".join(pairs)
 
+def is_add_profile_page_ready(page, timeout=5000):
+    '''Aguarda até que a janela para inserir dados do usuário esteja pronta'''
+    
+    name_input = page.locator('input[data-uia="account-profiles-page+add-profile+name-input"]')
+    name_input.wait_for(state="visible", timeout=timeout)
+    
+    if not name_input.is_enabled():
+        return False
+
+    return True
+
+def was_user_created(page, timeout=500):
+    '''Checa se o usuário foi criado'''
+
+    try:
+        # aceitamos regex para detectar o query param em qualquer ordem
+        import re
+        page.wait_for_url(re.compile(r"profileAdded=success"), timeout=int(timeout * 1000))
+        return True
+    except PWTimeout:
+        return False
 
 def create_new_user(ctx, user_name, avatar_key="icon26", is_kids=False):
 
-    if user_name == '':
-        user_name = "default"
+    page = ctx.new_page()
+    print("Abrindo página de login…")
+    page.goto(NETFLIX_PROFILES_URL, wait_until="domcontentloaded")
 
-    payload = {
-        "operationName": "AddProfile",
-        "variables": {
-            "name": user_name,
-            "avatarKey": avatar_key,
-            "isKids": bool(is_kids),
-        },
-        "extensions": {
-            "persistedQuery": {
-                "id": PERSISTED_QUERY_ID,
-                "version": PERSISTED_QUERY_VERSION
-            }
-        }
-    }
+    profile_add_btn = page.locator('button[data-uia="menu-card+button"][data-cl-view="addProfile"]')
+    profile_add_btn.wait_for(state="visible")
+    profile_add_btn.first.click()
 
-    body = json.dumps(payload)  # <- serializa manualmente
-
-    resp = ctx.request.post(
-        GRAPHQL_URL,
-        data=body,  # se sua versão suportar json=payload, pode usar json=payload e omitir o content-type
-        headers={
-            "origin": "https://www.netflix.com",
-            "referer": "https://www.netflix.com/",
-            "x-netflix.context.operation-name": "AddProfile",
-            "content-type": "application/json",
-        },
-    )
-
-    print("HTTP", resp.status)
-    try:
-        print(resp.text())
-    except Exception:
-        pass
-
+    if is_add_profile_page_ready(page):
+        
+        name_input = page.locator('input[data-uia="account-profiles-page+add-profile+name-input"]')
+        save_btn = page.locator('button[data-uia="account-profiles-page+add-profile+primary-button"]')
+        name_input.first.fill(user_name)
+        time.sleep(0.1)
+        save_btn.first.click()
+        return was_user_created(page)
         
 def is_session_valid(ctx, account_url, timeout_s=10):
     """Tenta acessar a página de Account e heurísticas simples para decidir se está logado."""
@@ -188,7 +189,7 @@ def main():
     ap.add_argument("--password", default=os.getenv("NETFLIX_PASSWORD"))
     ap.add_argument("--username")
     ap.add_argument("--state-path", default=STATE_PATH_DEFAULT)
-    ap.add_argument("--headless", action="store_false")
+    ap.add_argument("--headless", action="store_true")
     ap.add_argument("--timeout", type=int, default=120)
     args = ap.parse_args()
 
@@ -236,7 +237,16 @@ def main():
                 except Exception as e2:
                     print("❌ Falhou coletar cookies do contexto. Rode de novo sem fechar a janela, por favor.", e2)
 
-        create_new_user(ctx, args.username)
+            page.close()
+
+        user = create_new_user(ctx, args.username)
+
+        if user:
+            print("Usuário criado com sucesso!")
+
+        else:
+            print("Falha ao criar user")
+
             
 if __name__ == "__main__":
     main()
