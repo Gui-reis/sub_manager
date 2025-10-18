@@ -7,6 +7,21 @@ import os, sys, time, argparse, json
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 import pages
 
+
+STATE_PATH_DEFAULT = "netflix_state.json"
+
+
+def load_context_with_state(browser, state_path):
+    
+    if state_path != '':
+        try:
+            return browser.new_context(storage_state=state_path)
+        except Exception as e:
+            print(f"Aviso: falha ao carregar storage_state ({state_path}): {e}", file=sys.stderr)
+            # cai para criar um contexto limpo
+    return browser.new_context()
+
+
 def main():
 
     ap = argparse.ArgumentParser(description="Login Netflix automatizado e salvar sessão (cookies).")

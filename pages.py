@@ -98,10 +98,13 @@ class ProfilesPage(BasePage):
     MODAL_ROOT = 'div[data-uia="account-profiles-page+add-profile+background"]'
 
     def wait_ready(self) -> None:
-        self.page.locator(self.ADD_BTN).wait_for(state="visible", timeout=self.cfg.wait_timeout_ms)
-       
 
+        self.page.wait_for_load_state("networkidle")
+        self.page.locator(self.ADD_BTN).wait_for(state="visible", timeout=self.cfg.wait_timeout_ms)
+        
     def click_add(self) -> AddProfileModal:
+
+
         self.page.locator(self.ADD_BTN).click()
         root = self.page.locator(self.MODAL_ROOT)
         modal = AddProfileModal(root)
