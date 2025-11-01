@@ -71,6 +71,8 @@ class LoginPage(BasePage):
     PWD   = 'input[name="password"], input#id_password, input[data-uia="password-field"], input[type="password"]'
     SUBMIT= 'button[data-uia="login-submit-button"], button[type="submit"]'
     PROFILE = 'div[data-uia="profile-avatar"]'
+    HOME_MENU   = 'a.menu-trigger[data-uia="main-header-menu-trigger"][href="/browse"]'
+    HOME_SEARCH = 'svg.search-icon[data-icon="MagnifyingGlassMedium"'
 
 
     def wait_ready(self) -> None:
@@ -82,7 +84,20 @@ class LoginPage(BasePage):
         self.page.locator(self.SUBMIT).first.click()
 
     def wait_logged(self) -> None:
-         self.page.locator(self.PROFILE).first.wait_for(state="visible", timeout=self.cfg.wait_timeout_ms)
+        
+        any_selector = f"{self.PROFILE}, {self.HOME_MENU}, {self.HOME_SEARCH}"
+        try:
+            self.page.locator(any_selector).first.wait_for(
+                state="visible", timeout=self.cfg.wait_timeout_ms
+            )
+
+        except:
+           
+            self.page.wait_for_url(
+                re.compile(r"/(browse|profiles?)"),
+                timeout=int(self.cfg.wait_timeout_ms * 0.6),
+            )
+                
 
 
 class AccountPage(BasePage):

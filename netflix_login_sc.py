@@ -6,37 +6,42 @@
 import os, sys, time, argparse, json
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 import pages
-
+import Postgres
 
 STATE_PATH_DEFAULT = "netflix_state.json"
 
 
-def load_context_with_state(browser, state_path):
+def load_context_with_state(browser, state: dict):
     
-    if state_path != '':
-        try:
-            return browser.new_context(storage_state=state_path)
-        except Exception as e:
-            print(f"Aviso: falha ao carregar storage_state ({state_path}): {e}", file=sys.stderr)
-            # cai para criar um contexto limpo
-    return browser.new_context()
+    context = browser.new_context(storage_state=state)
+    return context
 
 
 def main():
 
     ap = argparse.ArgumentParser(description="Login Netflix automatizado e salvar sessão (cookies).")
-    ap.add_argument("--email", default=os.getenv("NETFLIX_EMAIL"))
-    ap.add_argument("--password", default=os.getenv("NETFLIX_PASSWORD"))
     ap.add_argument("--username")
-    ap.add_argument("--state-path", default=STATE_PATH_DEFAULT)
     ap.add_argument("--headless", action="store_true")
-    ap.add_argument("--timeout", type=int, default=120)
     args = ap.parse_args()
+
+
+    # Try to retrieve an available account 
+    netflix_db = Postgres.AccountsRepo()
+    account = netflix_db.get_first_available()
+
+    if account is None:
+        print('Nenhuma conta está disponível para uso')
+        return
+    
+    email = account["email"]
+    password = netflix_db.get_plain_password(email)
+    session_context = netflix_db.get_storage_state(email)
 
     with sync_playwright() as p:
 
         browser = p.chromium.launch(headless=args.headless)
-        ctx = load_context_with_state(browser, args.state_path)
+        ctx = (browser.new_context(storage_state=session_context)
+         if session_context else browser.new_context())
         page = ctx.new_page()
         cfg = pages.PageConfig()
 
@@ -52,23 +57,16 @@ def main():
 
             login_page = pages.LoginPage(page, cfg)
             login_page.open()
-            login_page.login(args.email, args.password)
+            login_page.login(email, password)
             login_page.wait_logged()
 
              # Sempre tentar salvar algo
             try:
-                ctx.storage_state(path=args.state_path)
-                print(f"✅ Sessão salva em: {args.state_path}")
+                state_dict = ctx.storage_state()
+                netflix_db.save_storage_state(email, state_dict)
             except Exception as e:
-                print("Aviso: storage_state direto falhou, tentando fallback de cookies…", e)
-                try:
-                    import json
-                    state = {"cookies": ctx.cookies(), "origins": []}
-                    with open(args.state_path, "w", encoding="utf-8") as f:
-                        json.dump(state, f)
-                    print(f"✅ Sessão salva (fallback) em: {args.state_path}")
-                except Exception as e2:
-                    print("❌ Falhou coletar cookies do contexto. Rode de novo sem fechar a janela, por favor.", e2)
+                print("Aviso: insertion do json da sessão falhou...", e)
+                
 
         profile_page = pages.ProfilesPage(page, cfg)
         profile_page.open()
