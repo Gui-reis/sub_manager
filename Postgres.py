@@ -7,6 +7,12 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import JSONB
 import getpass
 import json
+import os
+import stat
+
+from pathlib import Path
+
+DEFAULT_KEY_PATH = Path.home() /".secrets" /"pg_key.txt"
 
 DATABASE_URL = URL.create(
     drivername="postgresql+psycopg2",
@@ -43,6 +49,36 @@ class AccountsRepo:
     def __init__(self, session_factory: sessionmaker = SessionLocal):
         self._Session = session_factory
 
+    def _read_key_file(self, path: Path) -> str | None:
+        try:
+            # Certifica que existe
+            print("Checando o caminho")
+            if not path.exists():
+                print("caminho não existe")
+                return None
+
+            # Verifica permissões: idealmente apenas user readable (0o600)
+            mode = stat.S_IMODE(path.stat().st_mode)
+            if mode & 0o077:  # qualquer permissão para group/other é ruim
+                raise PermissionError(
+                    f"Key file {path} tem permissões inseguras ({oct(mode)}). "
+                    "Defina 0o600: chmod 600 {path}"
+                )
+
+            print("Não teve exceção")
+
+            # Lê e strip (remove newline)
+            text_key = path.read_text(encoding="utf-8").strip()
+            print("Retornando texto")
+            return text_key or None
+        except PermissionError:
+            print("Permission error")
+            raise
+        except Exception as e:
+            # não vaza exceções sensíveis; logue em debug se precisar
+            print("sei lá")
+            return None
+
     def insert_account_pgcrypto(self, email: str, plain_pw: str) -> None:
         key = getpass.getpass("Chave de criptografia (pgcrypto): ")
         sql = text("""
@@ -55,8 +91,24 @@ class AccountsRepo:
         with self._Session() as s, s.begin():
             s.execute(sql, {"email": email, "plain_pw": plain_pw, "key": key})
 
-    def get_plain_password(self, email: str) -> str | None:
-        key = getpass.getpass("Chave de criptografia (pgcrypto): ")
+    def get_plain_password(self, email: str, key_path: str | None = None) -> str | None:
+        """
+        Lê a chave de um ficheiro (key_path ou DEFAULT_KEY_PATH).
+        Se não existir, pede via getpass (modo atual).
+        """
+        # Resolve path do ficheiro (opcional)
+        key = None
+        if key_path:
+            key_file = Path(key_path).expanduser()
+            key = self._read_key_file(key_file)
+        else:
+            key = self._read_key_file(DEFAULT_KEY_PATH)
+
+        # fallback para pedir via getpass (se ainda não encontrou a chave)
+        if not key:
+            # NÃO imprima a chave em logs!
+            key = getpass.getpass("Chave de criptografia (pgcrypto): ")
+
         sql = text("""
             SELECT pgp_sym_decrypt(encrypted_password, :key) AS plain_pw
             FROM public.accounts
