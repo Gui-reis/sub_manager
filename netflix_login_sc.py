@@ -74,5 +74,27 @@ def main():
         modal.create(args.username)     # interage dentro do modal (sem trocar de URL)
         ok = profile_page.wait_profile_added()
 
+        # Caso o user tenha sido adicionado com sucesso, adionamos o novo user na tabela e tratamos da availability.
+        if ok:
+
+            user_added = netflix_db.push_back_user(email, args.username)
+            if user_added:
+                
+
+                # Cria um pin para o user
+
+                # Retorna para o usuário o Pin dele e também a senha atual da conta
+
+    
+                # Altera novamente a senha depois de alguns minutos
+
+
+                if netflix_db.count_users(email) == 2:
+                    netflix_db.update_availability(email, False)
+
+
+
 if __name__ == "__main__":
-    main()
+
+
+     

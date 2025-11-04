@@ -159,3 +159,57 @@ class AccountsRepo:
         with self._Session() as s:
             row = s.execute(sql).mappings().first()
             return dict(row) if row else None
+
+    def push_back_user(self, email: str, value: str, unique: bool = False) -> bool:
+        """
+        Adiciona 'value' ao final do array 'users'.
+        Se unique=True, só adiciona se ainda não existir.
+        Retorna True se houve UPDATE (linha afetada), False caso contrário.
+        """
+        if unique:
+            sql = text("""
+                UPDATE public.accounts
+                SET users = array_append(COALESCE(users, '{}'::text[]), :value)
+                WHERE trim(lower(email)) = lower(:email)
+                  AND NOT (:value = ANY(COALESCE(users, '{}'::text[])))
+            """)
+        else:
+            sql = text("""
+                UPDATE public.accounts
+                SET users = array_append(COALESCE(users, '{}'::text[]), :value)
+                WHERE trim(lower(email)) = lower(:email)
+            """)
+        with self._Session() as s, s.begin():
+            result = s.execute(sql, {"email": email, "value": value})
+            return result.rowcount > 0
+
+    def remove_user(self, email: str, value: str) -> bool:
+        """
+        Remove 'value' do array 'users'.
+        Retorna True se removeu (linha afetada), False se não havia o valor ou email não existe.
+        """
+        sql = text("""
+            UPDATE public.accounts
+            SET users = array_remove(COALESCE(users, '{}'::text[]), :value)
+            WHERE trim(lower(email)) = lower(:email)
+              AND (:value = ANY(COALESCE(users, '{}'::text[])))
+        """)
+        with self._Session() as s, s.begin():
+            result = s.execute(sql, {"email": email, "value": value})
+            return result.rowcount > 0
+
+    def count_users(self, email: str) -> int:
+        """
+        Retorna o número de elementos no array 'users'.
+        """
+        sql = text("""
+            SELECT COALESCE(cardinality(users), 0) AS n
+            FROM public.accounts
+            WHERE trim(lower(email)) = lower(:email)
+        """)
+        with self._Session() as s:
+            row = s.execute(sql, {"email": email}).mappings().first()
+            return int(row["n"]) if row else 0
+
+if __name__ == "__main__":
+    main()
