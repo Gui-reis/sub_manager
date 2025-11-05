@@ -52,9 +52,7 @@ class AccountsRepo:
     def _read_key_file(self, path: Path) -> str | None:
         try:
             # Certifica que existe
-            print("Checando o caminho")
             if not path.exists():
-                print("caminho não existe")
                 return None
 
             # Verifica permissões: idealmente apenas user readable (0o600)
@@ -65,18 +63,15 @@ class AccountsRepo:
                     "Defina 0o600: chmod 600 {path}"
                 )
 
-            print("Não teve exceção")
 
             # Lê e strip (remove newline)
             text_key = path.read_text(encoding="utf-8").strip()
-            print("Retornando texto")
             return text_key or None
         except PermissionError:
             print("Permission error")
             raise
         except Exception as e:
             # não vaza exceções sensíveis; logue em debug se precisar
-            print("sei lá")
             return None
 
     def insert_account_pgcrypto(self, email: str, plain_pw: str) -> None:
@@ -211,5 +206,147 @@ class AccountsRepo:
             row = s.execute(sql, {"email": email}).mappings().first()
             return int(row["n"]) if row else 0
 
-if __name__ == "__main__":
-    main()
+    def upsert_usercred_encrypted(self, email: str, name: str, plain_secret: str, key_path: str | None = None) -> bool:
+        """
+        Se existir um par com (name), atualiza somente o secret (recriptografa).
+        Senão, adiciona (name, pgp_sym_encrypt(plain_secret, key)).
+        Retorna True se houve alteração.
+        """
+        key = None
+        if key_path:
+            key_file = Path(key_path).expanduser()
+            key = self._read_key_file(key_file)
+        else:
+            key = self._read_key_file(DEFAULT_KEY_PATH)
+
+        # fallback para pedir via getpass (se ainda não encontrou a chave)
+        if not key:
+            # NÃO imprima a chave em logs!
+            key = getpass.getpass("Chave de criptografia (pgcrypto): ")
+
+        # 1) tenta UPDATE-in-place (substitui apenas o secret de quem tiver name = :name)
+        sql_update = text("""
+            UPDATE public.accounts
+            SET user_creds = ARRAY(
+              SELECT ROW((e).name,
+                         CASE WHEN (e).name = :name
+                              THEN pgp_sym_encrypt(:plain_secret, :key)::bytea
+                              ELSE (e).secret END
+                  )::public.user_cred
+              FROM unnest(COALESCE(user_creds, '{}'::public.user_cred[])) AS e
+            )
+            WHERE trim(lower(email)) = lower(:email)
+              AND EXISTS (
+                SELECT 1
+                FROM unnest(COALESCE(user_creds, '{}'::public.user_cred[])) AS ee
+                WHERE (ee).name = :name
+              )
+        """)
+        with self._Session() as s, s.begin():
+            r1 = s.execute(sql_update, {
+                "email": email,
+                "name": name,
+                "plain_secret": plain_secret,
+                "key": key
+            })
+            if r1.rowcount > 0:
+                return True
+
+        # 2) se não existia, faz append
+        sql_append = text("""
+            UPDATE public.accounts
+            SET user_creds = array_append(
+                  COALESCE(user_creds, '{}'::public.user_cred[]),
+                  ROW(:name, pgp_sym_encrypt(:plain_secret, :key)::bytea)::public.user_cred
+                )
+            WHERE trim(lower(email)) = lower(:email)
+        """)
+        with self._Session() as s, s.begin():
+            r2 = s.execute(sql_append, {
+                "email": email,
+                "name": name,
+                "plain_secret": plain_secret,
+                "key": key
+            })
+            return r2.rowcount > 0
+
+    def get_usercred_plain(self, email: str, name: str, key_path: str | None = None) -> str | None:
+        """
+        Retorna o secret (decriptografado) para o par com 'name'.
+        """
+        key = None
+        if key_path:
+            key_file = Path(key_path).expanduser()
+            key = self._read_key_file(key_file)
+        else:
+            key = self._read_key_file(DEFAULT_KEY_PATH)
+
+        # fallback para pedir via getpass (se ainda não encontrou a chave)
+        if not key:
+            # NÃO imprima a chave em logs!
+            key = getpass.getpass("Chave de criptografia (pgcrypto): ")
+
+
+        sql = text("""
+            SELECT pgp_sym_decrypt((e).secret, :key) AS plain_secret
+            FROM public.accounts
+            CROSS JOIN LATERAL unnest(COALESCE(user_creds, '{}'::public.user_cred[])) AS e
+            WHERE trim(lower(email)) = lower(:email)
+              AND (e).name = :name
+            LIMIT 1
+        """)
+        with self._Session() as s:
+            row = s.execute(sql, {"email": email, "name": name, "key": key}).mappings().first()
+            return row and row["plain_secret"]
+
+    def remove_usercred(self, email: str, name: str, ignore_case: bool = False) -> bool:
+        """
+        Remove do array user_creds todos os pares cujo (name) corresponda.
+        Se ignore_case=True, compara case-insensitive.
+        Retorna True se removeu (houve UPDATE), False se não havia o name ou email não existe.
+        """
+        if ignore_case:
+            sql = text("""
+                UPDATE public.accounts
+                SET user_creds = ARRAY(
+                  SELECT e
+                  FROM unnest(COALESCE(user_creds, '{}'::public.user_cred[])) AS e
+                  WHERE lower((e).name) <> lower(:name)
+                )
+                WHERE trim(lower(email)) = lower(:email)
+                  AND EXISTS (
+                    SELECT 1
+                    FROM unnest(COALESCE(user_creds, '{}'::public.user_cred[])) AS ee
+                    WHERE lower((ee).name) = lower(:name)
+                  )
+            """)
+        else:
+            sql = text("""
+                UPDATE public.accounts
+                SET user_creds = ARRAY(
+                  SELECT e
+                  FROM unnest(COALESCE(user_creds, '{}'::public.user_cred[])) AS e
+                  WHERE (e).name <> :name
+                )
+                WHERE trim(lower(email)) = lower(:email)
+                  AND EXISTS (
+                    SELECT 1
+                    FROM unnest(COALESCE(user_creds, '{}'::public.user_cred[])) AS ee
+                    WHERE (ee).name = :name
+                  )
+            """)
+
+        with self._Session() as s, s.begin():
+            r = s.execute(sql, {"email": email, "name": name})
+            return r.rowcount > 0
+
+    def count_usercreds(self, email: str) -> int:
+        sql = text("""
+            SELECT COALESCE(cardinality(user_creds), 0) AS n
+            FROM public.accounts
+            WHERE trim(lower(email)) = lower(:email)
+        """)
+        with self._Session() as s:
+            row = s.execute(sql, {"email": email}).mappings().first()
+            return int(row["n"]) if row else 0
+

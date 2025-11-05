@@ -7,6 +7,7 @@ import os, sys, time, argparse, json
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 import pages
 import Postgres
+import Password_generator
 
 STATE_PATH_DEFAULT = "netflix_state.json"
 
@@ -77,24 +78,25 @@ def main():
         # Caso o user tenha sido adicionado com sucesso, adionamos o novo user na tabela e tratamos da availability.
         if ok:
 
-            user_added = netflix_db.push_back_user(email, args.username)
+            # Cria um pin para o user
+            pwd = Password_generator.generate_password(length=4)
+            print(pwd)
+
+            # Cria o usário no banco de dados
+            user_added = netflix_db.upsert_usercred_encrypted(email, args.username, pwd)
             if user_added:
                 
-
-                # Cria um pin para o user
-
                 # Retorna para o usuário o Pin dele e também a senha atual da conta
+                returned_pwd = netflix_db.get_usercred_plain(email, args.username)
+                print(returned_pwd)
 
-    
-                # Altera novamente a senha depois de alguns minutos
-
-
-                if netflix_db.count_users(email) == 2:
+                if netflix_db.count_usercreds(email) == 2:
                     netflix_db.update_availability(email, False)
 
 
 
 if __name__ == "__main__":
+    main()
 
 
      
